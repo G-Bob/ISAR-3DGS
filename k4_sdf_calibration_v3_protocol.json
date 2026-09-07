@@ -1,0 +1,17 @@
+{
+  "root_cause": "Small-scale Smooth-L1 allowed constant/near-zero fields; Eikonal restored gradients without calibrating the zero set or signed distances.",
+  "code_backup": "backups/20260829_sdf_calibration_v3",
+  "training_preset": "preset_batch_20260827_221116.json",
+  "fixed": "K4, 240 training views, seed 42, 12k, four stages",
+  "variables": [
+    "exact smooth-L1 reproduction",
+    "direct L1",
+    "distance-normalized L1",
+    "strong normalized zero-set anchor",
+    "detached field geometry",
+    "earlier detached field warm-up",
+    "earlier detached warm-up plus Stage-D projection"
+  ],
+  "parallel_policy": "Seven jobs submitted; maximum six simultaneous GPU jobs for 12GB VRAM safety.",
+  "robustness_policy": "Incomplete K5-test3/K9-test7 manifests are used only after all seven trainings finish."
+}

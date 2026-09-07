@@ -1,0 +1,1 @@
+datasets/skynet5d-3/*.zip filter=lfs diff=lfs merge=lfs -text

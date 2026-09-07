@@ -1,0 +1,16 @@
+{
+  "evidence": "SDF gradient blends of 0.50 and 0.75 gave the best balanced and best distance geometry results respectively, but matched previews retained panel fish-scale patterns and central support diffusion.",
+  "goal": "Test whether constraining Gaussian motion to the learned SDF tangent space or applying a conservative Stage-D zero-set projection reduces residual surface artifacts.",
+  "variants": {
+    "blend050_control": "0.50 gradient blend reproduction",
+    "blend075_control": "0.75 gradient blend reproduction",
+    "blend050_tangent": "0.50 blend plus tangent-projected mean gradients in C/D",
+    "blend075_tangent": "0.75 blend plus tangent-projected mean gradients in C/D",
+    "blend050_project_d": "0.50 blend plus conservative Stage-D SDF projection",
+    "blend075_project_d": "0.75 blend plus conservative Stage-D SDF projection"
+  },
+  "projection": "Every 500 iterations in Stage D, step 0.025, maximum displacement 0.001 m.",
+  "fixed": "Complete K4 preset, 240 training views, seed 42, 12k, four stages, split threshold 5e-5, all other settings unchanged.",
+  "parallel_policy": "Exactly six variants, all six submitted concurrently on the 12GB GPU.",
+  "robustness_policy": "Incomplete K5-test3 and K9-test7 manifests are used only after all six training runs complete."
+}

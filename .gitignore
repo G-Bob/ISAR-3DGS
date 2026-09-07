@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+.vscode/
+outputs/
+training/
+checkpoints/
+*.pt
+*.pth
+*.log
+smoke/
+smoke_eval/
+backups/

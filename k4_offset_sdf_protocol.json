@@ -1,0 +1,15 @@
+{
+  "start_condition": "skynet5d2_k4_controlled_7way_20260828/ALL_COMPLETE",
+  "training_data": "complete K4 preset only",
+  "historical_code_backup": "backups/20260828_offset_sdf_v2",
+  "hypothesis": "Paired normal-offset distance targets prevent the near-zero field and near-zero gradient collapse observed in the legacy UDF.",
+  "variants": {
+    "legacy_udf": "Previous zero-set + normal + Eikonal formulation; failure control.",
+    "offset_udf_loss": "Unsigned paired offset targets without normal/Eikonal terms.",
+    "offset_udf_reg": "Unsigned paired offset targets with normal and Eikonal terms.",
+    "offset_udf_project_d": "offset_udf_reg plus conservative projection only in Stage D.",
+    "offset_sdf_loss": "Signed paired offset targets without normal/Eikonal terms.",
+    "offset_sdf_reg": "Signed paired offset targets with normal and Eikonal terms."
+  },
+  "robustness_policy": "Incomplete test manifests are loaded only after all SDF trainings complete."
+}

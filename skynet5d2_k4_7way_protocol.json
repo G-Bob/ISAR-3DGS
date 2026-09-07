@@ -1,0 +1,27 @@
+{
+  "dataset": "/root/Yao/datasets/skynet5d-2",
+  "training_preset": "preset_batch_20260827_221116.json",
+  "training_views": 240,
+  "control_output": "outputs/radar_gs/skynet5d2_k4_normal_20260828/training",
+  "ablation_root": "outputs/radar_gs/skynet5d2_k4_controlled_7way_20260828",
+  "fixed": {
+    "seed": 42,
+    "iterations": 12000,
+    "stages": 4,
+    "primitive_mode": "gaussian3d",
+    "surface_field_mode": "none",
+    "normal_covariance_floor_ratio": 0.25,
+    "split_mode": "asymmetric",
+    "split_direction_mode": "tangent_axes",
+    "split_displacement_ratio": 0.20
+  },
+  "single_variable_variants": {
+    "no_split": "split_mode=none",
+    "conservative_split": "split_mode=asymmetric_conservative",
+    "local_pca_split": "split_direction_mode=local_pca",
+    "split_disp_015": "split_displacement_ratio=0.15",
+    "covariance_002": "lambda_covariance_consistency=0.02",
+    "normal_floor_035": "normal_covariance_floor_ratio=0.35"
+  },
+  "robustness_policy": "The incomplete K5-test3 and K9-test7 manifests are used only after all seven trainings finish, during final evaluation."
+}

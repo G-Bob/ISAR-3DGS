@@ -1,0 +1,133 @@
+import torch
+
+from radar_gs.model import RadarGaussianScene
+
+
+def _scene(means: torch.Tensor, tangent_scale: float = 0.1) -> RadarGaussianScene:
+    normals = torch.zeros_like(means)
+    normals[:, 2] = 1.0
+    return RadarGaussianScene(
+        means=means,
+        normals=normals,
+        initial_tangent_scale=tangent_scale,
+        initial_normal_scale=0.01,
+        bbox=2.0,
+        initial_support_probability=0.9,
+        graph_neighbors=1,
+    )
+
+
+def test_adaptive_split_is_symmetric_and_uses_both_tangent_axes():
+    original = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    scene = _scene(original)
+    result = scene.adaptive_control(
+        evidence=torch.ones(2),
+        mean_gradient=torch.ones(2),
+        visible_fraction=torch.ones(2),
+        support_temperature=1.0,
+        prune_support_threshold=0.05,
+        prune_evidence_threshold=1.0e-4,
+        prune_min_visible_fraction=0.3,
+        split_support_threshold=0.5,
+        split_gradient_threshold=0.5,
+        maximum_gaussians=4,
+        minimum_gaussians=1,
+        split_displacement_ratio=0.3,
+        split_scale_shrink=0.8,
+    )
+
+    source_indices = result["source_indices"]
+    assert result["split"] == 2
+    assert result["split_axis_t1"] == 1
+    assert result["split_axis_t2"] == 1
+    assert result["symmetric_split"] is True
+
+    for split_order, (child_row, original_index) in enumerate(
+        zip(range(2, 4), source_indices[2:])
+    ):
+        parent_row = int(original_index)
+        midpoint = 0.5 * (scene.means[parent_row] + scene.means[child_row])
+        assert torch.allclose(midpoint, original[original_index], atol=1.0e-7)
+        displacement = scene.means[child_row] - scene.means[parent_row]
+        if split_order % 2 == 0:
+            assert displacement[0].abs() > 0
+            assert torch.allclose(displacement[1:], torch.zeros(2), atol=1.0e-7)
+        else:
+            assert displacement[1].abs() > 0
+            assert torch.allclose(
+                displacement[[0, 2]], torch.zeros(2), atol=1.0e-7
+            )
+
+    expected_scale = torch.full((4, 2), 0.08)
+    assert torch.allclose(scene.scales()[:, :2], expected_scale, atol=1.0e-7)
+
+
+def test_surface_gap_ignores_large_structural_separation():
+    local_scene = _scene(torch.tensor([[0.0, 0.0, 0.0], [0.2, 0.0, 0.0]]), 0.05)
+    local_terms = local_scene.surface_loss(
+        support=torch.ones(2),
+        gap_scale_ratio=1.5,
+        gap_max_distance=0.25,
+        gap_min_normal_cosine=0.8,
+    )
+    assert local_terms["surface_gap"] > 0
+
+    separated_scene = _scene(
+        torch.tensor([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]]), 0.05
+    )
+    separated_terms = separated_scene.surface_loss(
+        support=torch.ones(2),
+        gap_scale_ratio=1.5,
+        gap_max_distance=0.25,
+        gap_min_normal_cosine=0.8,
+    )
+    assert torch.allclose(separated_terms["surface_gap"], torch.tensor(0.0))
+
+
+def test_asymmetric_conservative_split_preserves_support_mass():
+    scene = _scene(torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
+    temperature = 0.6
+    before = scene.support_probability(temperature)[0]
+    result = scene.adaptive_control(
+        evidence=torch.ones(2),
+        mean_gradient=torch.ones(2),
+        visible_fraction=torch.ones(2),
+        support_temperature=temperature,
+        prune_support_threshold=0.05,
+        prune_evidence_threshold=1.0e-4,
+        prune_min_visible_fraction=0.3,
+        split_support_threshold=0.5,
+        split_gradient_threshold=0.5,
+        maximum_gaussians=3,
+        minimum_gaussians=1,
+        split_mode="asymmetric_conservative",
+    )
+    assert result["split"] == 1
+    parent = int(result["split_reset_positions"][0])
+    child = int(result["split_reset_positions"][1])
+    q = scene.support_probability(temperature)
+    combined = 1.0 - (1.0 - q[parent]) * (1.0 - q[child])
+    assert torch.allclose(combined, before, atol=1.0e-6)
+    assert not torch.allclose(scene.means[parent], scene.means[child])
+
+
+def test_split_eligibility_blocks_only_ineligible_candidates():
+    scene = _scene(torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
+    result = scene.adaptive_control(
+        evidence=torch.ones(2),
+        mean_gradient=torch.ones(2),
+        visible_fraction=torch.ones(2),
+        support_temperature=1.0,
+        prune_support_threshold=0.05,
+        prune_evidence_threshold=1.0e-4,
+        prune_min_visible_fraction=0.3,
+        split_support_threshold=0.5,
+        split_gradient_threshold=0.5,
+        maximum_gaussians=4,
+        minimum_gaussians=1,
+        split_mode="asymmetric",
+        split_eligible=torch.tensor([False, True]),
+    )
+    assert result["split"] == 1
+    assert result["source_indices"][-1].item() == 1
+    assert result["split_reset_positions"].tolist() == [1, 2]

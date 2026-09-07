@@ -1,0 +1,8 @@
+variant	lambda_support_sparsity	lambda_support_binary	prune_support_threshold	initial_support_probability	purpose
+db_control	0.003	0.001	0.075	0.20	exact inverse-hot-dB reproduction control
+db_sparsity_0015	0.0015	0.001	0.075	0.20	test half sparsity pressure
+db_sparsity_00075	0.00075	0.001	0.075	0.20	test quarter sparsity pressure
+db_binary_off	0.003	0.0	0.075	0.20	test whether entropy drives low-q collapse
+db_prune_003	0.003	0.001	0.030	0.20	test whether Stage C pruning removes valid low-q support
+db_initial_q030	0.003	0.001	0.075	0.30	test higher support starting basin
+db_calibrated_combo	0.0015	0.0005	0.030	0.20	conservative local combination of calibrated support pressures

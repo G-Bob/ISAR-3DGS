@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+from torch import nn
+
+from .geometry import orthonormalize_view, projection_coordinates, projection_jacobian
+from .model import RadarGaussianScene
+
+
+@dataclass
+class RenderOutput:
+    image: torch.Tensor
+    raw_image: torch.Tensor
+    accumulated_opacity: torch.Tensor
+    transmittance: torch.Tensor
+    gaussian_visibility: torch.Tensor
+    support_map: torch.Tensor
+    overlap_map: torch.Tensor
+    gaussian_contribution: torch.Tensor
+
+
+class RadarVisibilityRenderer(nn.Module):
+    """Amplitude-domain Gaussian renderer with radar LOS visibility.
+
+    Visibility is evaluated on the plane perpendicular to the LOS, whose axes
+    are kd and n = kr x kd. Gaussians are composited from radar-near to
+    radar-far on this plane. The resulting per-Gaussian visibility is then
+    transferred to the range-Doppler projection. This distinction matters:
+    points on the same LOS generally occupy different range bins and therefore
+    must not be visibility-composited directly in the ISAR image plane.
+    """
+
+    def __init__(
+        self,
+        height: int,
+        width: int,
+        depth_bins: int = 32,
+        kernel_radius: int = 4,
+        minimum_pixel_variance: float = 0.35,
+        opacity_gain: float = 1.0,
+        visibility_pixel_size: float = 0.0,
+    ):
+        super().__init__()
+        self.height = int(height)
+        self.width = int(width)
+        self.depth_bins = int(depth_bins)
+        self.kernel_radius = int(kernel_radius)
+        self.minimum_pixel_variance = float(minimum_pixel_variance)
+        self.opacity_gain = float(opacity_gain)
+        self.visibility_pixel_size = float(visibility_pixel_size)
+        axis = torch.arange(-kernel_radius, kernel_radius + 1)
+        grid_r, grid_c = torch.meshgrid(axis, axis, indexing="ij")
+        self.register_buffer(
+            "offsets", torch.stack((grid_r.reshape(-1), grid_c.reshape(-1)), dim=-1).long()
+        )
+
+    def _kernel_samples(
+        self,
+        row: torch.Tensor,
+        col: torch.Tensor,
+        covariance_2d: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        dtype = row.dtype
+        device = row.device
+        eye = torch.eye(2, device=device, dtype=dtype).unsqueeze(0)
+        covariance_2d = covariance_2d + eye * self.minimum_pixel_variance**2
+        inverse_covariance = torch.linalg.inv(covariance_2d)
+        base_row = torch.floor(row).long()
+        base_col = torch.floor(col).long()
+        pixel_row = base_row[:, None] + self.offsets[None, :, 0]
+        pixel_col = base_col[:, None] + self.offsets[None, :, 1]
+        valid = (
+            (pixel_row >= 0)
+            & (pixel_row < self.height)
+            & (pixel_col >= 0)
+            & (pixel_col < self.width)
+        )
+        delta = torch.stack(
+            (pixel_row.to(dtype) - row[:, None], pixel_col.to(dtype) - col[:, None]),
+            dim=-1,
+        )
+        mahalanobis = torch.einsum("gki,gij,gkj->gk", delta, inverse_covariance, delta)
+        kernel = torch.exp(-0.5 * mahalanobis.clamp_min(0.0)) * valid.to(dtype)
+        pixel_index = pixel_row.clamp(0, self.height - 1) * self.width
+        pixel_index = pixel_index + pixel_col.clamp(0, self.width - 1)
+        return kernel, pixel_index, valid
+
+    def _visibility(
+        self,
+        scene: RadarGaussianScene,
+        kr: torch.Tensor,
+        kd: torch.Tensor,
+        depth: torch.Tensor,
+        covariance_3d: torch.Tensor,
+        visibility_pixel_size: float,
+        support: torch.Tensor,
+        visibility_gain: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        kr, kd, normal = orthonormalize_view(kr, kd)
+        center_row = (self.height - 1.0) / 2.0
+        center_col = (self.width - 1.0) / 2.0
+        visibility_row = center_row - (scene.means @ normal) / visibility_pixel_size
+        visibility_col = center_col + (scene.means @ kd) / visibility_pixel_size
+        visibility_jacobian = torch.stack(
+            (-normal / visibility_pixel_size, kd / visibility_pixel_size), dim=0
+        )
+        covariance_visibility = torch.einsum(
+            "ai,gij,bj->gab", visibility_jacobian, covariance_3d, visibility_jacobian
+        )
+        kernel, pixel_index, _ = self._kernel_samples(
+            visibility_row, visibility_col, covariance_visibility
+        )
+        density = (
+            support[:, None]
+            * kernel
+            * self.opacity_gain
+            * float(visibility_gain)
+        )
+        depth_fraction = ((depth / scene.bbox) + 1.0) * 0.5
+        far_to_near_bin = torch.floor(depth_fraction * self.depth_bins).long()
+        far_to_near_bin = far_to_near_bin.clamp(0, self.depth_bins - 1)
+        near_to_far_bin = self.depth_bins - 1 - far_to_near_bin
+
+        flat_index = near_to_far_bin[:, None] * (self.height * self.width) + pixel_index
+        volume = torch.zeros(
+            self.depth_bins * self.height * self.width,
+            device=scene.means.device,
+            dtype=scene.means.dtype,
+        )
+        volume.scatter_add_(0, flat_index.reshape(-1), density.reshape(-1))
+        volume = volume.view(self.depth_bins, self.height, self.width)
+        alpha = 1.0 - torch.exp(-volume)
+        survival = (1.0 - alpha).clamp_min(1.0e-7)
+        transmittance_before = torch.cat(
+            (torch.ones_like(survival[:1]), torch.cumprod(survival[:-1], dim=0)), dim=0
+        )
+        flat_transmittance = transmittance_before.reshape(-1)
+        sampled = flat_transmittance[flat_index]
+        gaussian_visibility = (sampled * kernel).sum(dim=-1) / kernel.sum(dim=-1).clamp_min(1.0e-8)
+        final_transmittance = survival.prod(dim=0)
+        return gaussian_visibility, final_transmittance
+
+    def forward(
+        self,
+        scene: RadarGaussianScene,
+        kr: torch.Tensor,
+        kd: torch.Tensor,
+        dr: float,
+        dd: float,
+        amplitudes: torch.Tensor | None = None,
+        support_probability: torch.Tensor | None = None,
+        support_temperature: float = 1.0,
+        visibility_gain: float = 1.0,
+    ) -> RenderOutput:
+        device = scene.means.device
+        dtype = scene.means.dtype
+        kr = kr.to(device=device, dtype=dtype)
+        kd = kd.to(device=device, dtype=dtype)
+        row, col, depth = projection_coordinates(
+            scene.means, kr, kd, self.height, self.width, dr, dd
+        )
+        covariance_3d = scene.covariance()
+        rd_jacobian = projection_jacobian(kr, kd, dr, dd)
+        covariance_rd = torch.einsum(
+            "ai,gij,bj->gab", rd_jacobian, covariance_3d, rd_jacobian
+        )
+        rd_kernel, rd_pixel_index, _ = self._kernel_samples(row, col, covariance_rd)
+        visibility_pixel_size = self.visibility_pixel_size
+        if visibility_pixel_size <= 0:
+            visibility_pixel_size = float((dr * dd) ** 0.5)
+        if support_probability is None:
+            support_probability = scene.support_probability(support_temperature)
+        visibility, final_transmittance = self._visibility(
+            scene,
+            kr,
+            kd,
+            depth,
+            covariance_3d,
+            visibility_pixel_size=visibility_pixel_size,
+            support=support_probability,
+            visibility_gain=visibility_gain,
+        )
+        if amplitudes is None:
+            amplitudes = scene.scattering_amplitude(kr, kd)
+        base_density = support_probability[:, None] * rd_kernel
+        raw_density = base_density * amplitudes[:, None]
+        visible_density = raw_density * visibility[:, None]
+        visible_support_density = base_density * visibility[:, None]
+        pixel_count = self.height * self.width
+        raw_image = torch.zeros(pixel_count, device=device, dtype=dtype)
+        image = torch.zeros_like(raw_image)
+        opacity = torch.zeros_like(raw_image)
+        log_background_probability = torch.zeros_like(raw_image)
+        support_odds = torch.zeros_like(raw_image)
+        raw_image.scatter_add_(0, rd_pixel_index.reshape(-1), raw_density.reshape(-1))
+        image.scatter_add_(0, rd_pixel_index.reshape(-1), visible_density.reshape(-1))
+        opacity.scatter_add_(0, rd_pixel_index.reshape(-1), base_density.reshape(-1))
+        per_sample_support = visible_support_density.clamp(0.0, 1.0 - 1.0e-6)
+        log_background_probability.scatter_add_(
+            0,
+            rd_pixel_index.reshape(-1),
+            torch.log1p(-per_sample_support).reshape(-1),
+        )
+        support_odds.scatter_add_(
+            0,
+            rd_pixel_index.reshape(-1),
+            (per_sample_support / (1.0 - per_sample_support)).reshape(-1),
+        )
+        # Exact noisy-OR target support:
+        #   M(p) = 1 - product_i(1 - q_i V_i K_ip).
+        background_probability = torch.exp(log_background_probability)
+        support_map = (1.0 - background_probability).view(self.height, self.width)
+        # Probability that at least two distinct Gaussians support a pixel.
+        # For Bernoulli contributions c_i:
+        #   P(N=0) = product_i(1-c_i)
+        #   P(N=1) = P(N=0) * sum_i c_i/(1-c_i)
+        # This suppresses isolated ellipses while retaining the regions formed
+        # by genuine multi-Gaussian overlap.
+        exactly_one_probability = background_probability * support_odds
+        overlap_map = (1.0 - background_probability - exactly_one_probability)
+        overlap_map = overlap_map.clamp(0.0, 1.0).view(self.height, self.width)
+        return RenderOutput(
+            image=image.view(self.height, self.width),
+            raw_image=raw_image.view(self.height, self.width),
+            accumulated_opacity=opacity.view(self.height, self.width),
+            transmittance=final_transmittance,
+            gaussian_visibility=visibility,
+            support_map=support_map,
+            overlap_map=overlap_map,
+            gaussian_contribution=support_probability * visibility * amplitudes,
+        )

@@ -1,0 +1,20 @@
+{
+  "evidence": "Legacy no-split results retain strong diagonal fish-scale patterns, so adaptive split can amplify but is not required to create the artifact. Observation-aware EMA improves geometry modestly but does not reduce overlap or the visual pattern.",
+  "goal": "Determine whether fish-scale support is created by early mean, normal-basis, or scale optimization under view-limited image gradients, and whether stronger per-update multi-view consensus reduces it.",
+  "baseline": "v10 combined_margin2: observation-aware EMA, observation-weighted support, 2-pixel FOV margin, offset-SDF gradient blend 0.50.",
+  "variants": {
+    "control": "exact baseline, 8 views per batch",
+    "freeze_normals": "disable normal/basis optimizer gradients and PCA refresh",
+    "freeze_scales": "disable scale optimizer gradients",
+    "freeze_covariance": "disable normal and scale optimizer gradients; no PCA refresh",
+    "delay_means_b": "enable mean gradients at Stage B",
+    "delay_covariance_b": "enable normal and scale gradients at Stage B",
+    "delay_all_geometry_b": "enable means, normals and scales at Stage B",
+    "delay_covariance_c": "enable normal and scale gradients at Stage C",
+    "delay_all_geometry_c": "enable all geometry gradients at Stage C",
+    "multiview16": "double views per update from 8 to 16"
+  },
+  "fixed": "Complete K4 preset, seed 42, 12k, four stages, 240 training views, identical support/SDF/split settings and evaluation protocol.",
+  "storage": "/root/autodl-fs/radar_gs_isar_enc/outputs/radar_gs/skynet5d2_k4_geometry_dynamics_v11_20260831",
+  "parallel_policy": "Exactly ten training variants submitted concurrently on the 24GB RTX 3090 with expandable CUDA segments enabled."
+}

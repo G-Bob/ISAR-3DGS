@@ -1,0 +1,17 @@
+{
+  "evidence": "Coupled normalized SDF improved Chamfer and normals while increasing Gaussian count from about 10.6k to 14.3k. Detached SDF/UDF did not reproduce that gain, and UDF collapsed to a near-constant field.",
+  "goal": "Separate implicit-field geometry effects from field-gradient-driven adaptive splitting, then match Gaussian count with no-field controls.",
+  "variants": {
+    "sdf_total_control": "legacy coupled SDF using total-loss adaptive gradients",
+    "sdf_image_grad": "same SDF but adaptive split statistics use image loss only",
+    "nofield_control": "no implicit field at the original split threshold",
+    "nofield_split_4e5": "no field with a moderately lower split threshold",
+    "nofield_split_3e5": "no field with a lower split threshold to approach the SDF Gaussian count",
+    "sdf_image_split_4e5": "image-gradient SDF with moderate split threshold compensation",
+    "sdf_image_split_3e5": "image-gradient SDF with stronger split threshold compensation"
+  },
+  "fixed": "Complete K4 preset, 240 training views, seed 42, 12k, four stages, all geometry/support/scattering settings unchanged except named variables.",
+  "parallel_policy": "Seven submitted, maximum six simultaneous for 12GB VRAM safety.",
+  "robustness_policy": "Incomplete K5-test3 and K9-test7 manifests are used only for final evaluation after all seven training runs finish.",
+  "code_backup": "backups/adaptive_gradient_source_20260829"
+}

@@ -1,0 +1,433 @@
+from __future__ import annotations
+
+import random
+import time
+from pathlib import Path
+
+import torch
+
+from .data import ISARView
+from .io import export_ply, save_checkpoint, save_preview, write_json
+from .losses import compress_amplitude, reconstruction_loss
+from .model import RadarGaussianScene
+from .renderer import RadarVisibilityRenderer
+
+
+def training_schedule(iteration: int, total: int, arguments: dict) -> dict:
+    # Include both endpoints: the first update is always stage A and the final
+    # update reaches the fully annealed stage D settings.
+    fraction = (iteration - 1) / max(total - 1, 1)
+    end_a = float(arguments["stage_a_fraction"])
+    end_b = float(arguments["stage_b_fraction"])
+    end_c = float(arguments["stage_c_fraction"])
+    if not 0.0 < end_a < end_b < end_c < 1.0:
+        raise ValueError("Require 0 < stage_a_fraction < stage_b_fraction < stage_c_fraction < 1")
+
+    if fraction <= end_a:
+        stage = "A"
+        local = fraction / end_a
+        occupancy_factor = 0.0
+        binary_factor = 0.0
+        graph_factor = 0.0
+        background_trainable = False
+    elif fraction <= end_b:
+        stage = "B"
+        local = (fraction - end_a) / (end_b - end_a)
+        occupancy_factor = local
+        binary_factor = 0.0
+        graph_factor = local
+        background_trainable = True
+    elif fraction <= end_c:
+        stage = "C"
+        local = (fraction - end_b) / (end_c - end_b)
+        occupancy_factor = 1.0
+        binary_factor = 0.5 * local
+        graph_factor = 1.0
+        background_trainable = True
+    else:
+        stage = "D"
+        local = (fraction - end_c) / (1.0 - end_c)
+        occupancy_factor = 1.0
+        binary_factor = 0.5 + 0.5 * local
+        graph_factor = 1.0
+        background_trainable = True
+
+    post_a = max(0.0, min(1.0, (fraction - end_a) / (1.0 - end_a)))
+    temperature = 1.0 + post_a * (float(arguments["final_support_temperature"]) - 1.0)
+    visibility_gain = float(arguments["initial_visibility_gain"])
+    visibility_gain += fraction * (1.0 - visibility_gain)
+    surface_factor = 0.25 + 0.75 * fraction
+    return {
+        "stage": stage,
+        "stage_progress": local,
+        "occupancy_factor": occupancy_factor,
+        "binary_factor": binary_factor,
+        "graph_factor": graph_factor,
+        "surface_factor": surface_factor,
+        "background_trainable": background_trainable,
+        "temperature": temperature,
+        "visibility_gain": visibility_gain,
+    }
+
+
+def _make_optimizer(scene: RadarGaussianScene, base_lr: float) -> torch.optim.Optimizer:
+    return torch.optim.Adam(scene.parameter_groups(base_lr))
+
+
+def train(
+    scene: RadarGaussianScene,
+    renderer: RadarVisibilityRenderer,
+    views: list[ISARView],
+    output_dir: str | Path,
+    arguments: dict,
+) -> list[dict]:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    device = next(scene.parameters()).device
+    current_base_lr = float(arguments["lr"])
+    optimizer = _make_optimizer(scene, current_base_lr)
+    randomizer = random.Random(arguments["seed"])
+    history: list[dict] = []
+    start_time = time.perf_counter()
+    views_per_batch = max(1, int(arguments["views_per_batch"]))
+    evidence_ema = torch.zeros(scene.count, device=device)
+    gradient_ema = torch.zeros(scene.count, device=device)
+    visible_ema = torch.zeros(scene.count, device=device)
+    split_cooldown = max(0, int(arguments.get("split_cooldown_iterations", 0)))
+    split_age = torch.full(
+        (scene.count,), split_cooldown, dtype=torch.long, device=device
+    )
+    ema_decay = float(arguments["evidence_ema_decay"])
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+
+    scene.train()
+    previous_stage = None
+    pca_reference_ready = False
+    for iteration in range(1, arguments["iters"] + 1):
+        split_age.add_(1)
+        schedule = training_schedule(iteration, arguments["iters"], arguments)
+        if schedule["stage"] == "A":
+            support = torch.full_like(
+                scene.support_logits,
+                float(arguments["initial_support_probability"]),
+            )
+        else:
+            support = scene.support_probability(schedule["temperature"])
+
+        pca_refresh = None
+        pca_mode = arguments.get("pca_normal_refresh_mode", "none")
+        if schedule["stage"] == "C" and previous_stage != "C" and pca_mode != "none":
+            pca_refresh = scene.refresh_normals_pca(
+                evidence_ema,
+                arguments.get("pca_min_confidence", 1.0e-4),
+                hard_reset=pca_mode in {"stage_c_hard", "adaptive_hard"},
+                maximum_neighbor_distance=arguments.get(
+                    "pca_max_neighbor_distance", 0.0
+                ),
+                maximum_surface_variation=arguments.get(
+                    "pca_max_surface_variation", 1.0
+                ),
+                minimum_planar_spread_ratio=arguments.get(
+                    "pca_min_planar_spread_ratio", 0.0
+                ),
+            )
+            pca_reference_ready = True
+            print(
+                f"pca-normal iter={iteration:06d} updated={pca_refresh['updated']} "
+                f"cos_before={pca_refresh['mean_abs_cosine_before']:.4f} "
+                f"hard={pca_mode in {'stage_c_hard', 'adaptive_hard'}}"
+            )
+
+        if views_per_batch <= len(views):
+            batch = randomizer.sample(views, views_per_batch)
+        else:
+            batch = [views[randomizer.randrange(len(views))] for _ in range(views_per_batch)]
+
+        image_losses = []
+        robust_values = []
+        log_values = []
+        ssim_values = []
+        contribution_values = []
+        visibility_values = []
+        preview_items = None
+        for view in batch:
+            target = view.image.to(device, non_blocking=True)
+            output = renderer(
+                scene,
+                view.kr,
+                view.kd,
+                view.dr,
+                view.dd,
+                support_probability=support,
+                visibility_gain=schedule["visibility_gain"],
+            )
+            signal = output.raw_image if arguments["disable_visibility"] else output.image
+            background = scene.background(
+                view.training_index,
+                target.shape[0],
+                target.shape[1],
+                detach=not schedule["background_trainable"],
+            )
+            raw_prediction = compress_amplitude(
+                output.raw_image + background,
+                arguments["render_gamma"],
+            )
+            prediction = compress_amplitude(signal + background, arguments["render_gamma"])
+            per_view_loss, image_metrics = reconstruction_loss(
+                prediction,
+                target,
+                arguments["lambda_ssim"],
+                arguments["lambda_log_amplitude"],
+                arguments["charbonnier_epsilon"],
+                arguments["log_amplitude_gain"],
+            )
+            image_losses.append(per_view_loss)
+            robust_values.append(image_metrics["charbonnier"])
+            log_values.append(image_metrics["log_charbonnier"])
+            ssim_values.append(image_metrics["ssim"])
+            contribution_values.append(output.gaussian_contribution.detach())
+            visibility_values.append(
+                (output.gaussian_visibility.detach() >= arguments["visible_threshold"]).float()
+            )
+            preview_items = (
+                view,
+                target,
+                raw_prediction,
+                prediction,
+                output.support_map,
+                output.overlap_map,
+            )
+
+        image_loss = torch.stack(image_losses).mean()
+        support_terms = scene.support_losses(
+            support,
+            arguments["graph_spatial_sigma"],
+            arguments["graph_normal_sigma"],
+        )
+        surface_terms = scene.surface_loss(
+            arguments["maximum_normal_ratio"],
+            arguments["graph_spatial_sigma"],
+            arguments["graph_normal_sigma"],
+            support=support,
+            gap_scale_ratio=arguments["surface_gap_scale_ratio"],
+            gap_max_distance=arguments["surface_gap_max_distance"],
+            gap_min_normal_cosine=arguments["surface_gap_min_normal_cosine"],
+            coverage_min_ratio=arguments.get("coverage_min_ratio", 0.75),
+            coverage_max_ratio=arguments.get("coverage_max_ratio", 1.25),
+            use_normal_gate=arguments.get("surface_graph_mode", "spatial_normal")
+            == "spatial_normal",
+        )
+        surface_loss = (
+            surface_terms["surface_thinness"]
+            + arguments["lambda_local_plane"] * surface_terms["local_plane"]
+            + arguments["lambda_normal_consistency"] * surface_terms["normal_consistency"]
+            + arguments["lambda_reference_normal"]
+            * (
+                1.0
+                if pca_mode == "none" or pca_reference_ready
+                else 0.0
+            )
+            * surface_terms["reference_alignment"]
+            + arguments["lambda_surface_gap"] * surface_terms["surface_gap"]
+            + arguments.get("lambda_bidirectional_plane", 0.0)
+            * surface_terms["bidirectional_plane"]
+            + arguments.get("lambda_scale_smoothness", 0.0)
+            * surface_terms["scale_smoothness"]
+            + arguments.get("lambda_coverage_band", 0.0)
+            * surface_terms["coverage_band"]
+            + arguments["lambda_bbox"] * surface_terms["bbox"]
+        )
+        total = image_loss
+        total = total + arguments["lambda_support_sparsity"] * schedule[
+            "occupancy_factor"
+        ] * support_terms["support_sparsity"]
+        total = total + arguments["lambda_support_binary"] * schedule[
+            "binary_factor"
+        ] * support_terms["support_entropy"]
+        total = total + arguments["lambda_support_graph"] * schedule[
+            "graph_factor"
+        ] * support_terms["support_graph"]
+        total = total + arguments["lambda_surface"] * schedule[
+            "surface_factor"
+        ] * surface_loss
+        if schedule["background_trainable"]:
+            total = total + arguments["lambda_background"] * scene.background_loss()
+        total = total + arguments["lambda_scattering_feature"] * scene.feature_loss()
+
+        optimizer.zero_grad(set_to_none=True)
+        total.backward()
+        mean_gradient = scene.means.grad.detach().norm(dim=-1)
+        if arguments["gradient_clip"] > 0:
+            torch.nn.utils.clip_grad_norm_(scene.parameters(), arguments["gradient_clip"])
+        optimizer.step()
+        if iteration % arguments["lr_decay_interval"] == 0:
+            current_base_lr *= float(arguments["lr_decay"])
+            for group in optimizer.param_groups:
+                group["lr"] *= float(arguments["lr_decay"])
+
+        batch_evidence = torch.stack(contribution_values).mean(0)
+        batch_visible = torch.stack(visibility_values).mean(0)
+        evidence_ema.mul_(ema_decay).add_(batch_evidence, alpha=1.0 - ema_decay)
+        gradient_ema.mul_(ema_decay).add_(mean_gradient, alpha=1.0 - ema_decay)
+        visible_ema.mul_(ema_decay).add_(batch_visible, alpha=1.0 - ema_decay)
+
+        record = {
+            "iteration": iteration,
+            "stage": schedule["stage"],
+            "loss": float(total.detach()),
+            "image_loss": float(image_loss.detach()),
+            "charbonnier": float(torch.stack(robust_values).mean().detach()),
+            "log_charbonnier": float(torch.stack(log_values).mean().detach()),
+            "ssim": float(torch.stack(ssim_values).mean().detach()),
+            "support_mean": float(support_terms["support_sparsity"].detach()),
+            "support_entropy": float(support_terms["support_entropy"].detach()),
+            "support_graph": float(support_terms["support_graph"].detach()),
+            "surface": float(surface_loss.detach()),
+            "thinness": float(surface_terms["surface_thinness"].detach()),
+            "local_plane": float(surface_terms["local_plane"].detach()),
+            "normal_consistency": float(surface_terms["normal_consistency"].detach()),
+            "surface_gap": float(surface_terms["surface_gap"].detach()),
+            "bidirectional_plane": float(
+                surface_terms["bidirectional_plane"].detach()
+            ),
+            "scale_smoothness": float(surface_terms["scale_smoothness"].detach()),
+            "coverage_band": float(surface_terms["coverage_band"].detach()),
+            "background": float(scene.background_loss().detach()),
+            "gaussians": scene.count,
+            "views_per_batch": views_per_batch,
+            "encounters": [view.encounter for view in batch],
+            "frames": [view.frame_index for view in batch],
+        }
+        if pca_refresh is not None:
+            record["pca_normal_refresh"] = pca_refresh
+        if device.type == "cuda":
+            record["gpu_peak_allocated_gb"] = torch.cuda.max_memory_allocated(device) / 2**30
+            record["gpu_peak_reserved_gb"] = torch.cuda.max_memory_reserved(device) / 2**30
+
+        if iteration == 1 or iteration % arguments["log_interval"] == 0:
+            memory_text = ""
+            if device.type == "cuda":
+                memory_text = (
+                    f" gpu_peak={record['gpu_peak_allocated_gb']:.2f}/"
+                    f"{record['gpu_peak_reserved_gb']:.2f}GB"
+                )
+            print(
+                f"iter={iteration:06d} stage={schedule['stage']} "
+                f"loss={record['loss']:.6f} ssim={record['ssim']:.5f} "
+                f"q={record['support_mean']:.4f} G={scene.count}"
+                f"{memory_text}"
+            )
+
+        if iteration % arguments["preview_interval"] == 0 or iteration == arguments["iters"]:
+            view, target, raw_prediction, prediction, support_map, overlap_map = preview_items
+            save_preview(
+                output_dir / "render_preview" / f"iter_{iteration:06d}.png",
+                target,
+                raw_prediction,
+                prediction,
+                f"{view.encounter} frame {view.frame_index}",
+                support=support_map,
+                overlap=overlap_map,
+            )
+
+        adaptive_result = None
+        if (
+            schedule["stage"] == "C"
+            and arguments["adaptive_interval"] > 0
+            and iteration % arguments["adaptive_interval"] == 0
+        ):
+            adaptive_result = scene.adaptive_control(
+                evidence_ema,
+                gradient_ema,
+                visible_ema,
+                schedule["temperature"],
+                arguments["prune_support_threshold"],
+                arguments["prune_evidence_threshold"],
+                arguments["prune_min_visible_fraction"],
+                arguments["split_support_threshold"],
+                arguments["split_gradient_threshold"],
+                arguments["maximum_gaussians"],
+                arguments["minimum_gaussians"],
+                arguments["split_displacement_ratio"],
+                arguments["split_scale_shrink"],
+                arguments["split_mode"],
+                arguments["split_evidence_threshold"],
+                split_age >= split_cooldown if split_cooldown > 0 else None,
+            )
+            source = adaptive_result.pop("source_indices")
+            split_reset_positions = adaptive_result.pop("split_reset_positions")
+            evidence_ema = evidence_ema[source].clone()
+            gradient_ema = gradient_ema[source].clone()
+            visible_ema = visible_ema[source].clone()
+            split_age = split_age[source].clone()
+            if len(split_reset_positions):
+                split_age[split_reset_positions] = 0
+            optimizer = _make_optimizer(scene, current_base_lr)
+            if pca_mode == "adaptive_hard":
+                adaptive_pca = scene.refresh_normals_pca(
+                    evidence_ema,
+                    arguments.get("pca_min_confidence", 1.0e-4),
+                    hard_reset=True,
+                    maximum_neighbor_distance=arguments.get(
+                        "pca_max_neighbor_distance", 0.0
+                    ),
+                    maximum_surface_variation=arguments.get(
+                        "pca_max_surface_variation", 1.0
+                    ),
+                    minimum_planar_spread_ratio=arguments.get(
+                        "pca_min_planar_spread_ratio", 0.0
+                    ),
+                )
+                record["adaptive_pca_normal_refresh"] = adaptive_pca
+            record["adaptive_control"] = adaptive_result
+            print(
+                f"adaptive iter={iteration:06d} pruned={adaptive_result['pruned']} "
+                f"split={adaptive_result['split']} "
+                f"axes={adaptive_result['split_axis_t1']}/"
+                f"{adaptive_result['split_axis_t2']} G={adaptive_result['count']}"
+            )
+
+        history.append(record)
+        previous_stage = schedule["stage"]
+        if iteration % arguments["checkpoint_interval"] == 0:
+            save_checkpoint(
+                output_dir / "checkpoints" / f"iter_{iteration:06d}.pt",
+                scene,
+                arguments,
+                iteration,
+            )
+
+    elapsed = time.perf_counter() - start_time
+    save_checkpoint(output_dir / "checkpoints" / "final.pt", scene, arguments, arguments["iters"])
+    export_ply(
+        output_dir / "gaussians_final.ply",
+        scene,
+        support_temperature=arguments["final_support_temperature"],
+    )
+    write_json(output_dir / "training_history.json", history)
+    timing_report = {
+        "device": str(device),
+        "iterations": arguments["iters"],
+        "views_per_batch": views_per_batch,
+        "total_view_renders": arguments["iters"] * views_per_batch,
+        "selected_views": len(views),
+        "final_gaussians": scene.count,
+        "total_seconds": elapsed,
+        "seconds_per_iteration": elapsed / max(arguments["iters"], 1),
+        "seconds_per_view_render": elapsed / max(arguments["iters"] * views_per_batch, 1),
+    }
+    if device.type == "cuda":
+        properties = torch.cuda.get_device_properties(device)
+        timing_report.update(
+            {
+                "gpu_name": properties.name,
+                "gpu_total_memory_gb": properties.total_memory / 2**30,
+                "peak_gpu_allocated_gb": torch.cuda.max_memory_allocated(device) / 2**30,
+                "peak_gpu_reserved_gb": torch.cuda.max_memory_reserved(device) / 2**30,
+                "peak_allocated_fraction": torch.cuda.max_memory_allocated(device)
+                / properties.total_memory,
+            }
+        )
+    write_json(output_dir / "timing_report.json", timing_report)
+    return history

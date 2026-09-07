@@ -1,0 +1,17 @@
+{
+  "schema": "radar_gs_random_k1_v1",
+  "batch_timestamp": "20260827",
+  "design_mode": "random_single_encounter",
+  "selection_seed": 20260827,
+  "selected_k": 1,
+  "frames_per_encounter": 60,
+  "encounters": [
+    {
+      "set_k": 1,
+      "member_id": 1,
+      "config_id": "RANDOM_K01_B",
+      "folder_name": "skynet5d_20260822_120715_idx0003",
+      "frame_count": 60
+    }
+  ]
+}

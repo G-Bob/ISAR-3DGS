@@ -1,0 +1,14 @@
+{
+  "hypothesis": "Limited view coverage does not create an explicit empty-pixel loss outside the image, but legacy evidence/visibility EMA decays with zeros whenever a Gaussian is outside the sampled view while global support sparsity remains active. This converts missing positive evidence into an implicit negative prior and can produce view-dependent alternating support footprints.",
+  "variants": {
+    "observation_control": "legacy EMA and global support losses",
+    "ema_only": "do not decay evidence/visibility EMA for projections outside the image",
+    "support_only": "weight support sparsity and entropy by observation confidence, floor 0.05",
+    "combined_margin0": "observation-aware EMA plus weighted support, zero-pixel margin",
+    "combined_margin2": "combined mechanism with a 2-pixel trusted-FOV margin",
+    "combined_margin4": "combined mechanism with a 4-pixel trusted-FOV margin matching kernel radius"
+  },
+  "fixed": "Complete K4 preset, 240 training views, seed 42, 12k, four stages, offset-SDF gradient blend 0.50, asymmetric split displacement 0.20 and shrink 0.80, all other v8-control geometry settings unchanged.",
+  "interrupted_history": "v9 split-spacing processes were terminated at the user's request; partial logs and checkpoints remain untouched.",
+  "robustness_policy": "Incomplete K5-test3 and K9-test7 manifests are used only after all six training runs complete."
+}

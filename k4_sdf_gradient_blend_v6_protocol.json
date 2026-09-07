@@ -1,0 +1,16 @@
+{
+  "evidence": "At matched Gaussian count, coupled SDF total-gradient achieved Chamfer 0.07023 and normal consistency 0.71487, versus no-field split-3e5 at 0.07293 and 0.57448. Image-only adaptive gradients removed too much useful split guidance.",
+  "goal": "Measure how much implicit-field gradient should participate in adaptive split statistics while preserving the full optimization loss.",
+  "variants": {
+    "sdf_total_control": "legacy total adaptive gradient, implicit-field fraction 1.0",
+    "sdf_base_control": "image plus ordinary regularizers, implicit-field fraction 0.0",
+    "sdf_blend_025": "base gradient plus 25 percent implicit-field gradient",
+    "sdf_blend_050": "base gradient plus 50 percent implicit-field gradient",
+    "sdf_blend_075": "base gradient plus 75 percent implicit-field gradient",
+    "sdf_base_split_3e5": "zero implicit-field split gradient with lower threshold for count matching"
+  },
+  "fixed": "Complete K4 preset, 240 training views, seed 42, 12k, four stages, all other settings unchanged.",
+  "parallel_policy": "Exactly six variants, all six submitted concurrently on the 12GB GPU.",
+  "robustness_policy": "Incomplete K5-test3 and K9-test7 manifests are used only after all six training runs complete.",
+  "code_backup": "backups/adaptive_gradient_blend_20260829"
+}

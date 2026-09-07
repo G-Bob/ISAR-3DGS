@@ -1,0 +1,16 @@
+{
+  "evidence": "The existing surface-field normal term trains only the implicit field because Gaussian normals are detached in the offset branch. Tangent mean constraints degraded local planarity, while conservative center projection was visually neutral.",
+  "goal": "Use detached SDF gradients as a continuous orientation target for Gaussian covariance normals without moving Gaussian centers.",
+  "variants": {
+    "normal_control": "blend-0.50 reproduction without geometry-normal alignment",
+    "normal_001": "geometry-normal weight 0.001",
+    "normal_002": "geometry-normal weight 0.002",
+    "normal_005": "geometry-normal weight 0.005",
+    "normal_010": "geometry-normal weight 0.010",
+    "normal_005_cov010": "geometry-normal 0.005 plus neighborhood covariance consistency 0.010"
+  },
+  "fixed": "Complete K4 preset, 240 training views, seed 42, 12k, four stages, SDF adaptive-gradient blend 0.50, split threshold 5e-5, no tangent means and no center projection.",
+  "parallel_policy": "Exactly six variants submitted concurrently, with expandable CUDA segments enabled.",
+  "code_backup": "backups/sdf_geometry_normal_20260830",
+  "robustness_policy": "Incomplete K5-test3 and K9-test7 manifests are used only after all six training runs complete."
+}

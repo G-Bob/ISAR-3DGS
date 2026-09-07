@@ -1,0 +1,10 @@
+{
+  "image_size": 256,
+  "los_angle_deg": 5.0,
+  "num_gaussians": 10000,
+  "bbox": 6.0,
+  "views_per_batch": 4,
+  "iters": 30000,
+  "lambda_surface": 0.1,
+  "maximum_normal_ratio": 0.2
+}

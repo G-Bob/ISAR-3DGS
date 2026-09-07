@@ -1,0 +1,52 @@
+{
+  "transform_point_cloud_to_model": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "metrics": {
+    "iterations": 0,
+    "trimmed_rmse": null,
+    "median_nearest_surface_distance": 0.16590153774842373,
+    "p90_nearest_surface_distance": 0.5141402548394445,
+    "uniform_scale": 1.0
+  },
+  "model_diagonal": 9.566272464960567,
+  "median_distance_fraction_of_diagonal": 0.017342338759019194,
+  "retained_points": 2385,
+  "marker_coloring": {
+    "mode": "distance",
+    "near_distance": 0.0314200769576675,
+    "far_distance": 0.5141402548394445,
+    "yellow_point_count": 532,
+    "transition_point_count": 1614,
+    "blue_point_count": 239
+  },
+  "surface_distance_summary": {
+    "min": 0.000666315193395675,
+    "median": 0.16590153774842373,
+    "p90": 0.5141402548394445,
+    "max": 1.1484416441100536
+  }
+}

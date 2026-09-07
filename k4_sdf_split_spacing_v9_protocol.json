@@ -1,0 +1,15 @@
+{
+  "evidence": "SDF-to-Gaussian normal alignment improved normal consistency and voxel IoU but did not materially reduce panel fish-scale patterns or central support diffusion. The residual artifact is therefore more consistent with periodic child-Gaussian placement and post-split footprint spacing.",
+  "goal": "Reduce periodic fish-scale support patterns by controlling asymmetric split displacement and child scale shrink while keeping the SDF and all geometry regularizers fixed.",
+  "variants": {
+    "spacing_control": "displacement ratio 0.20, scale shrink 0.80",
+    "disp_005": "displacement ratio 0.05, scale shrink 0.80",
+    "disp_010": "displacement ratio 0.10, scale shrink 0.80",
+    "disp_015": "displacement ratio 0.15, scale shrink 0.80",
+    "disp_010_shrink090": "displacement ratio 0.10, scale shrink 0.90",
+    "disp_015_shrink090": "displacement ratio 0.15, scale shrink 0.90"
+  },
+  "fixed": "Complete K4 preset, 240 training views, seed 42, 12k, four stages, SDF adaptive-gradient blend 0.50, split threshold 5e-5, no SDF geometry-normal term, no tangent means, no center projection.",
+  "parallel_policy": "Exactly six variants submitted concurrently with expandable CUDA segments enabled.",
+  "robustness_policy": "Incomplete K5-test3 and K9-test7 manifests are used only after all six training runs complete."
+}

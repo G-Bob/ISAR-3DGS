@@ -1,0 +1,32 @@
+{
+  "purpose": "Train only on complete manifests and evaluate robustness on the two incomplete test manifests.",
+  "training": {
+    "k5_complete": "preset_batch_20260828_103135.json",
+    "k9_complete": "preset_batch_20260828_103233.json"
+  },
+  "robustness_tests": {
+    "k5_test3": {
+      "manifest": "preset_batch_20260828_011104_testset.json",
+      "declared_k": 5,
+      "available_encounters": 3,
+      "views": 180
+    },
+    "k9_test7": {
+      "manifest": "preset_batch_20260827_235101_testset.json",
+      "declared_k": 9,
+      "available_encounters": 7,
+      "views": 420
+    }
+  },
+  "matrix": "Both K5 and K9 checkpoints are evaluated on both test manifests.",
+  "fixed_controls": {
+    "seed": 42,
+    "iterations": 12000,
+    "stages": 4,
+    "initial_gaussians": 10000,
+    "maximum_gaussians": 20000,
+    "primitive": "legacy gaussian3d",
+    "surface_field": "none",
+    "amplitude_domain": "legacy control"
+  }
+}

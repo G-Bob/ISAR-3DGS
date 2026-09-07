@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "radar-gs-isar"
+version = "0.8.0"
+description = "Mask-free self-supervised surface-constrained radar Gaussian splatting for ISAR"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "Pillow>=10.0", "scipy>=1.10", "torch>=2.2", "trimesh>=4.0", "matplotlib>=3.7"]
+
+[tool.setuptools]
+packages = ["radar_gs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

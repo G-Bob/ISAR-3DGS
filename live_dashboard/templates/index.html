@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISAR RadarGS Live</title>
+  <script src="https://cdn.plot.ly/plotly-3.1.0.min.js"></script>
+  <style>
+    :root { color-scheme: dark; --panel:#151a23; --line:#2d3545; --muted:#9aa8ba; --accent:#62d4b4; }
+    * { box-sizing:border-box; }
+    body { margin:0; font:14px/1.45 Inter,Segoe UI,sans-serif; background:#0c1017; color:#ecf2f8; }
+    header { display:flex; align-items:center; gap:18px; padding:14px 20px; border-bottom:1px solid var(--line); background:#111620; }
+    header h1 { font-size:18px; margin:0; }
+    header .root { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    main { display:grid; grid-template-columns:310px minmax(480px,1fr) minmax(480px,1fr); gap:12px; padding:12px; height:calc(100vh - 57px); }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; min-height:0; }
+    .panel-title { padding:10px 13px; border-bottom:1px solid var(--line); font-weight:600; }
+    #runs { height:calc(100% - 42px); overflow:auto; }
+    .run { width:100%; color:inherit; text-align:left; border:0; border-bottom:1px solid #252d3b; padding:10px 12px; background:transparent; cursor:pointer; }
+    .run:hover,.run.active { background:#222b3a; }
+    .run strong { display:block; font-size:13px; }
+    .sub { display:flex; justify-content:space-between; color:var(--muted); margin-top:4px; font-size:12px; }
+    .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; background:#667085; }
+    .training .dot { background:#f7b955; box-shadow:0 0 7px #f7b955; }
+    .complete .dot { background:var(--accent); }
+    .queued .dot { background:#64748b; }
+    .failed .dot,.training_failed .dot,.evaluation_failed .dot,.render_failed .dot { background:#ff6874; }
+    .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:10px; }
+    .metric { background:#0e131b; border-radius:7px; padding:8px; }
+    .metric span { color:var(--muted); font-size:11px; display:block; }
+    .metric b { font-size:15px; }
+    #preview-wrap { display:flex; height:calc(100% - 104px); align-items:center; justify-content:center; padding:10px; }
+    #preview { max-width:100%; max-height:100%; object-fit:contain; image-rendering:auto; }
+    #cloud { height:calc(100% - 42px); }
+    .empty { color:var(--muted); padding:24px; text-align:center; }
+    @media(max-width:1250px){ main{grid-template-columns:260px 1fr; height:auto}.cloud-panel{grid-column:1/3;height:650px}.panel{min-height:520px} }
+  </style>
+</head>
+<body>
+  <header><h1>ISAR RadarGS Live</h1><span id="heartbeat">Connecting…</span><span class="root">{{ output_root }}</span></header>
+  <main>
+    <section class="panel"><div class="panel-title">Sequential experiments</div><div id="runs"></div></section>
+    <section class="panel">
+      <div class="panel-title" id="selected-title">Latest checkpoint render</div>
+      <div class="metrics">
+        <div class="metric"><span>Iteration / Stage</span><b id="m-iteration">—</b></div>
+        <div class="metric"><span>Gaussians</span><b id="m-gaussians">—</b></div>
+        <div class="metric"><span>Mean support</span><b id="m-support">—</b></div>
+        <div class="metric"><span>Training SSIM</span><b id="m-ssim">—</b></div>
+      </div>
+      <div id="preview-wrap"><div class="empty">Select a run with a checkpoint.</div></div>
+    </section>
+    <section class="panel cloud-panel"><div class="panel-title">Interactive Gaussian centres · colour = support q</div><div id="cloud"></div></section>
+  </main>
+<script>
+let selected = null, selectedCheckpoint = null;
+const fmt = (v,n=4) => (v === undefined || v === null) ? '—' : Number(v).toFixed(n);
+async function refreshRuns(){
+  const runs = await (await fetch('/api/runs',{cache:'no-store'})).json();
+  const box=document.getElementById('runs'); box.innerHTML='';
+  for(const run of runs){
+    const button=document.createElement('button'); button.className=`run ${run.state} ${selected===run.name?'active':''}`;
+    button.innerHTML=`<strong><span class="dot"></span>${run.name}</strong><div class="sub"><span>${run.state}</span><span>iter ${run.logged_iteration ?? run.checkpoint_iteration ?? 0}</span></div>`;
+    button.onclick=()=>selectRun(run.name,true); box.appendChild(button);
+  }
+  document.getElementById('heartbeat').textContent=`Live · ${new Date().toLocaleTimeString()} · ${runs.filter(r=>r.state==='training').length} training`;
+  if(!selected){ const first=runs.find(r=>r.has_checkpoint); if(first) await selectRun(first.name,true); }
+  else { const current=runs.find(r=>r.name===selected); if(current && current.checkpoint_iteration!==selectedCheckpoint) await selectRun(selected,false); }
+}
+async function selectRun(name,force){
+  selected=name;
+  try{
+    const data=await (await fetch(`/api/run/${encodeURIComponent(name)}`,{cache:'no-store'})).json();
+    selectedCheckpoint=data.iteration;
+    document.getElementById('selected-title').textContent=`${name} · ${data.checkpoint}`;
+    document.getElementById('m-iteration').textContent=`${data.iteration} / ${data.stage}`;
+    document.getElementById('m-gaussians').textContent=`${data.gaussian_count.toLocaleString()}`;
+    document.getElementById('m-support').textContent=fmt(data.support_mean,3);
+    document.getElementById('m-ssim').textContent=fmt(data.ssim,4);
+    document.getElementById('preview-wrap').innerHTML=`<img id="preview" src="/api/run/${encodeURIComponent(name)}/preview?t=${Date.now()}" alt="latest training render preview">`;
+    const x=data.xyz.map(p=>p[0]), y=data.xyz.map(p=>p[1]), z=data.xyz.map(p=>p[2]);
+    Plotly.react('cloud',[{type:'scatter3d',mode:'markers',x,y,z,marker:{size:2.3,color:data.support,colorscale:'Viridis',cmin:0,cmax:1,opacity:.76,colorbar:{title:'support q'}},hovertemplate:'x %{x:.3f}<br>y %{y:.3f}<br>z %{z:.3f}<br>q %{marker.color:.3f}<extra></extra>'}],{margin:{l:0,r:0,b:0,t:0},paper_bgcolor:'#151a23',plot_bgcolor:'#151a23',font:{color:'#dbe5ef'},scene:{aspectmode:'data',xaxis:{title:'X (m)',gridcolor:'#344052'},yaxis:{title:'Y (m)',gridcolor:'#344052'},zaxis:{title:'Z (m)',gridcolor:'#344052'}}},{responsive:true,displaylogo:false});
+  }catch(e){ document.getElementById('preview-wrap').innerHTML='<div class="empty">Checkpoint or preview is not available yet.</div>'; }
+  await refreshRunClasses();
+}
+async function refreshRunClasses(){ document.querySelectorAll('.run').forEach(b=>b.classList.toggle('active',b.textContent.includes(selected))); }
+refreshRuns().catch(console.error); setInterval(()=>refreshRuns().catch(console.error),15000);
+</script>
+</body></html>

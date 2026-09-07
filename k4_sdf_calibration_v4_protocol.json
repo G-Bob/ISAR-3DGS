@@ -1,0 +1,16 @@
+{
+  "evidence": "Normalized SDF with zero weight 0.01 improved geometry but increased Gaussian count; zero weight 1.0 collapsed the field. Detached strong-zero variants also collapsed.",
+  "goal": "Calibrate a detached field before geometry projection, sweep low zero/Eikonal weights, and compare signed SDF against orientation-agnostic UDF.",
+  "variants": [
+    "normalized SDF coupled reproduction",
+    "detached SDF zero=0.01 Eikonal=0.01",
+    "detached SDF zero=0.01 Eikonal=0.05",
+    "detached SDF zero=0.02 Eikonal=0.05",
+    "detached UDF zero=0.01 Eikonal=0.05",
+    "detached UDF zero=0.02 Eikonal=0.05",
+    "same UDF plus Stage-D projection"
+  ],
+  "fixed": "Complete K4 preset, 240 training views, seed 42, 12k, four stages",
+  "parallel_policy": "Seven submitted, maximum six simultaneous for VRAM safety.",
+  "robustness_policy": "Incomplete test manifests are used only after all seven trainings complete."
+}

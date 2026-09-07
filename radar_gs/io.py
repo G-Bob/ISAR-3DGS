@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+import torch
+from PIL import Image, ImageDraw
+
+from .losses import display_amplitude
+from .model import RadarGaussianScene
+
+
+def save_checkpoint(
+    path: str | Path,
+    scene: RadarGaussianScene,
+    arguments: dict,
+    iteration: int,
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "iteration": iteration,
+            "arguments": arguments,
+            "model": scene.state_dict(),
+            "model_shape": {
+                "count": scene.count,
+                "bbox": scene.bbox,
+                "feature_dim": scene.features.shape[1],
+                "encoding_levels": scene.scattering.encoding_levels,
+                "direction_encoding_levels": scene.scattering.direction_encoding_levels,
+                "hidden_dim": scene.scattering.net[0].out_features,
+                "maximum_scattering_amplitude": scene.scattering.maximum_amplitude,
+                "background_mode": scene.background_mode,
+                "graph_neighbors": scene.graph_neighbors,
+                "tangent_covariance_mode": scene.tangent_covariance_mode,
+                "normal_covariance_floor_ratio": scene.normal_covariance_floor_ratio,
+                "primitive_mode": scene.primitive_mode,
+                "surfel_normal_scale": scene.surfel_normal_scale,
+                "surfel_fixed_normals": scene.surfel_fixed_normals,
+                "surface_field_mode": scene.surface_field_mode,
+                "surface_field_hidden_dim": (
+                    scene.surface_field.hidden_dim if scene.surface_field is not None else 32
+                ),
+                "surface_field_layers": (
+                    scene.surface_field.layers if scene.surface_field is not None else 3
+                ),
+            },
+        },
+        path,
+    )
+
+
+def load_scene(path: str | Path, device: torch.device) -> tuple[RadarGaussianScene, dict]:
+    checkpoint = torch.load(path, map_location="cpu")
+    shape = checkpoint["model_shape"]
+    state = dict(checkpoint["model"])
+    if "support_logits" not in state and "opacity_logits" in state:
+        state["support_logits"] = state.pop("opacity_logits")
+    means = state["means"]
+    normals = state.get("reference_normals", state["normal_parameters"])
+    scales = state["log_scales"].exp()
+    support_logits = state.get("support_logits", state.get("opacity_logits"))
+    initial_support = float(torch.sigmoid(support_logits).mean())
+    background_coefficients = state.get("background_coefficients", torch.empty((0, 1)))
+    background_levels = torch.nn.functional.softplus(background_coefficients[:, 0])
+    scene = RadarGaussianScene(
+        means=means,
+        normals=normals,
+        initial_tangent_scale=float(scales[:, :2].mean()),
+        initial_normal_scale=float(scales[:, 2].mean()),
+        bbox=float(shape["bbox"]),
+        feature_dim=int(shape["feature_dim"]),
+        encoding_levels=int(shape["encoding_levels"]),
+        hidden_dim=int(shape["hidden_dim"]),
+        maximum_scattering_amplitude=float(shape.get("maximum_scattering_amplitude", 1.0)),
+        initial_support_probability=initial_support,
+        background_levels=background_levels,
+        background_mode=shape.get("background_mode", "constant"),
+        graph_neighbors=int(shape.get("graph_neighbors", 8)),
+        tangent_covariance_mode=shape.get("tangent_covariance_mode", "anisotropic"),
+        normal_covariance_floor_ratio=float(
+            shape.get("normal_covariance_floor_ratio", 0.0)
+        ),
+        primitive_mode=shape.get("primitive_mode", "gaussian3d"),
+        surfel_normal_scale=float(shape.get("surfel_normal_scale", 0.002)),
+        surfel_fixed_normals=bool(shape.get("surfel_fixed_normals", False)),
+        surface_field_mode=shape.get("surface_field_mode", "none"),
+        surface_field_hidden_dim=int(shape.get("surface_field_hidden_dim", 32)),
+        surface_field_layers=int(shape.get("surface_field_layers", 3)),
+        direction_encoding_levels=shape.get("direction_encoding_levels"),
+    )
+    scene.load_state_dict(state, strict=False)
+    return scene.to(device), checkpoint
+
+
+def export_ply(
+    path: str | Path,
+    scene: RadarGaussianScene,
+    support_temperature: float = 1.0,
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    means = scene.means.detach().cpu().numpy()
+    normals = scene.normals().detach().cpu().numpy()
+    support = scene.support_probability(support_temperature).detach().cpu().numpy()
+    scales = scene.scales().detach().cpu().numpy()
+    header = [
+        "ply",
+        "format ascii 1.0",
+        f"element vertex {len(means)}",
+        "property float x",
+        "property float y",
+        "property float z",
+        "property float nx",
+        "property float ny",
+        "property float nz",
+        "property float target_support_probability",
+        "property float scale_t1",
+        "property float scale_t2",
+        "property float scale_normal",
+        "end_header",
+    ]
+    rows = np.concatenate((means, normals, support[:, None], scales), axis=1)
+    with path.open("w", encoding="utf-8") as stream:
+        stream.write("\n".join(header) + "\n")
+        np.savetxt(stream, rows, fmt="%.8g")
+
+
+def save_preview(
+    path: str | Path,
+    target: torch.Tensor,
+    raw: torch.Tensor,
+    final: torch.Tensor,
+    title: str,
+    support: torch.Tensor | None = None,
+    overlap: torch.Tensor | None = None,
+    labels: str | None = None,
+) -> None:
+    arrays = []
+    tensors = [target, raw, final]
+    if support is not None:
+        tensors.append(support)
+    if overlap is not None:
+        tensors.append(overlap)
+    for tensor in tensors:
+        tensor = display_amplitude(tensor.detach().cpu())
+        arrays.append(np.uint8(tensor.numpy() * 255.0))
+    height, width = arrays[0].shape
+    canvas = Image.new("L", (width * len(arrays), height + 24), color=0)
+    for index, array in enumerate(arrays):
+        canvas.paste(Image.fromarray(array, mode="L"), (index * width, 24))
+    canvas = canvas.convert("RGB")
+    draw = ImageDraw.Draw(canvas)
+    if labels is None:
+        labels = "target | raw | visibility-aware"
+        if support is not None:
+            labels += " | soft target support"
+        if overlap is not None:
+            labels += " | multi-Gaussian overlap"
+    draw.text((4, 4), f"{title}: {labels}", fill="white")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(path)
+
+
+def write_json(path: str | Path, values: dict | list) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(values, indent=2), encoding="utf-8")
