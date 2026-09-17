@@ -1,6 +1,6 @@
 # ISAR RadarGS: Sequential Encounter Reconstruction
 
-This repository contains the RadarGS implementation and the `skynet5d-3` acquisition used to study 3D reconstruction as chronological radar encounters accumulate. Each `K` model uses the first `K` encounters from a propagated orbit sequence. No view is selected to optimise reconstruction quality.
+This repository contains the RadarGS implementation used to study 3D reconstruction as chronological radar encounters accumulate. Each `K` model uses a physically ordered encounter prefix; the newer continual-learning experiments can also warm-start from the preceding stage and control historical replay.
 
 ## Current experiment
 
@@ -13,9 +13,22 @@ This repository contains the RadarGS implementation and the `skynet5d-3` acquisi
 
 The direction-capacity experiment follows one main observation from *When 3D Gaussian Splatting Recovers Real Surfaces*: excessive view-dependent appearance capacity can compensate for incorrect geometry. The paper studies optical 3DGS with a finite spherical-harmonic head. This code uses a nonlinear radar-scattering MLP, so reduced direction encoding is an experimental analogue rather than the paper's formal guarantee.
 
+## `skynet5d-4` continual experiments
+
+The current code additionally supports the eight-encounter `skynet5d-4` study:
+
+- independent cumulative-prefix models for `K=1..8`;
+- sequential warm starts where stage `K` inherits stage `K-1`;
+- fixed 25% historical replay;
+- fixed 50% replay with optional protection of inherited high-support Gaussians;
+- natural proportional sampling from all accumulated frames;
+- current-encounter and cumulative evaluation after every stage.
+
+Prepare and run these protocols with `prepare_skynet5d4.py`, `prepare_incremental.py`, `prepare_replay.py`, and their matching queue scripts. Dataset paths and output roots are explicit in those experiment drivers and should be adjusted for a new host.
+
 ## Live dashboard
 
-The read-only dashboard scans the newest checkpoint, displays the matching training preview, and plots Gaussian centres in an interactive 3D view. It does not reserve CUDA memory.
+The read-only dashboard scans the newest checkpoint, displays the matching training preview, and plots Gaussian centres in an interactive 3D view. The point-cloud panel includes a live support-threshold slider and 0.1/0.3/0.5/0.7 presets. Filtering occurs in the browser and does not reserve CUDA memory or modify checkpoints.
 
 On the server:
 
@@ -59,6 +72,11 @@ configs/                   base experiment configuration
 live_dashboard/            browser interface
 prepare_sequential.py      acquisition audit and cumulative-K job builder
 run_sequential_queue.py    bounded persistent training/evaluation queue
+prepare_incremental.py     sequential warm-start K=1..8 job builder
+prepare_replay.py          fixed replay/protection job builder
+prepare_proportional.py    natural accumulated-frame sampling job builder
+run_replay.py              bounded replay chains and evaluation
+run_proportional.py        proportional replay chain and evaluation
 render_sequential_result.py final native-CAD point-cloud and LOS render export
 datasets/skynet5d-3/       complete original dataset archives through Git LFS
 ```

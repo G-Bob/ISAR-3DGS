@@ -10,7 +10,7 @@ import torch
 
 from radar_gs.data import load_dataset, save_selection_report
 from radar_gs.initialization import initialize_surface
-from radar_gs.io import export_ply, write_json
+from radar_gs.io import export_ply, load_scene, write_json
 from radar_gs.losses import inverse_compress_amplitude
 from radar_gs.model import RadarGaussianScene
 from radar_gs.presets import load_encounter_batch_preset
@@ -85,6 +85,32 @@ def build_parser() -> argparse.ArgumentParser:
         default="backprojection_surface",
     )
     parser.add_argument("--init_path", type=str)
+    parser.add_argument(
+        "--warm_start_checkpoint",
+        type=str,
+        help=(
+            "Initialize the complete Gaussian/scattering model from a previous "
+            "checkpoint while resetting optimizer state, the training schedule, "
+            "and view-specific background coefficients."
+        ),
+    )
+    parser.add_argument(
+        "--continual_current_encounter",
+        type=str,
+        help="Encounter receiving the non-replay share of each continual batch.",
+    )
+    parser.add_argument(
+        "--continual_replay_fraction",
+        type=float,
+        default=0.0,
+        help="Fraction of every view batch sampled uniformly from earlier encounters.",
+    )
+    parser.add_argument(
+        "--protect_warm_start_support_threshold",
+        type=float,
+        default=0.0,
+        help="Prevent adaptive pruning of inherited Gaussians whose initial q meets this threshold; 0 disables protection.",
+    )
     parser.add_argument("--initial_tangent_scale", type=float, default=0.08)
     parser.add_argument("--initial_normal_scale", type=float, default=0.012)
     parser.add_argument(
@@ -552,42 +578,63 @@ def main() -> None:
         print(f"Validation complete; reports written to {output_dir}")
         return
 
-    means, normals = initialize_surface(
-        arguments.initialization,
-        arguments.num_gaussians,
-        arguments.bbox,
-        arguments.seed,
-        views=views,
-        init_path=arguments.init_path,
-    )
     background_levels = torch.tensor([view.background_init for view in views])
     background_levels = inverse_compress_amplitude(
         background_levels, arguments.render_gamma
     )
-    scene = RadarGaussianScene(
-        means,
-        normals,
-        arguments.initial_tangent_scale,
-        arguments.initial_normal_scale,
-        arguments.bbox,
-        arguments.feature_dim,
-        arguments.encoding_levels,
-        arguments.hidden_dim,
-        arguments.maximum_scattering_amplitude,
-        arguments.initial_support_probability,
-        background_levels,
-        arguments.background_mode,
-        arguments.graph_neighbors,
-        arguments.tangent_covariance_mode,
-        arguments.normal_covariance_floor_ratio,
-        arguments.primitive_mode,
-        arguments.surfel_normal_scale,
-        arguments.surfel_fixed_normals,
-        arguments.surface_field_mode,
-        arguments.surface_field_hidden_dim,
-        arguments.surface_field_layers,
-        direction_encoding_levels=arguments.direction_encoding_levels,
-    ).to(device)
+    if arguments.warm_start_checkpoint:
+        checkpoint_path = Path(arguments.warm_start_checkpoint)
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(f"Warm-start checkpoint not found: {checkpoint_path}")
+        scene, inherited_checkpoint = load_scene(checkpoint_path, device)
+        coefficient_count = 1 if scene.background_mode == "constant" else 3
+        coefficients = torch.zeros(
+            (len(background_levels), coefficient_count),
+            dtype=background_levels.dtype,
+            device=device,
+        )
+        if len(background_levels):
+            levels = background_levels.to(device).clamp_min(1.0e-6)
+            coefficients[:, 0] = torch.log(torch.expm1(levels))
+        scene.background_coefficients = torch.nn.Parameter(coefficients)
+        print(
+            f"Warm-started {scene.count} Gaussians from {checkpoint_path} "
+            f"(source iteration {inherited_checkpoint.get('iteration', 'unknown')}); "
+            f"reset {len(background_levels)} view backgrounds"
+        )
+    else:
+        means, normals = initialize_surface(
+            arguments.initialization,
+            arguments.num_gaussians,
+            arguments.bbox,
+            arguments.seed,
+            views=views,
+            init_path=arguments.init_path,
+        )
+        scene = RadarGaussianScene(
+            means,
+            normals,
+            arguments.initial_tangent_scale,
+            arguments.initial_normal_scale,
+            arguments.bbox,
+            arguments.feature_dim,
+            arguments.encoding_levels,
+            arguments.hidden_dim,
+            arguments.maximum_scattering_amplitude,
+            arguments.initial_support_probability,
+            background_levels,
+            arguments.background_mode,
+            arguments.graph_neighbors,
+            arguments.tangent_covariance_mode,
+            arguments.normal_covariance_floor_ratio,
+            arguments.primitive_mode,
+            arguments.surfel_normal_scale,
+            arguments.surfel_fixed_normals,
+            arguments.surface_field_mode,
+            arguments.surface_field_hidden_dim,
+            arguments.surface_field_layers,
+            direction_encoding_levels=arguments.direction_encoding_levels,
+        ).to(device)
     export_ply(output_dir / "gaussians_initial.ply", scene)
     renderer = RadarVisibilityRenderer(
         arguments.image_size,

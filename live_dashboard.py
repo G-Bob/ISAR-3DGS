@@ -110,16 +110,39 @@ class CheckpointCache:
             status = states.get(name, {})
             row = {
                 "name": name,
-                "scenario": status.get("scenario", name.split("_", 1)[0]),
+                "scenario": status.get("scenario", "CPA50"),
                 "k": status.get("k"),
-                "variant": status.get("variant"),
+                "variant": status.get("current_encounter"),
                 "state": status.get("state", "training" if run.exists() else "queued"),
                 "checkpoint_iteration": checkpoint_iteration,
                 "has_checkpoint": checkpoint is not None,
             }
             row.update(self.latest_log_record(run))
             rows.append(row)
-        return rows
+        return sorted(rows, key=lambda row: int(row.get("k") or 0))
+
+    def orbit_data(self) -> dict:
+        audit_path = self.root / "acquisition_audit.json"
+        if not audit_path.exists():
+            return {"encounters": []}
+        audit = json.loads(audit_path.read_text())
+        protocol_path = self.root / "protocol.json"
+        protocol = json.loads(protocol_path.read_text()) if protocol_path.exists() else {}
+        data_root = Path(protocol.get("dataset", "/root/Yao/datasets/skynet5d-4"))
+        encounters = []
+        for entry in audit:
+            views = np.load(data_root / entry["folder_name"] / "view_angle.npy")
+            encounters.append({
+                "k": int(entry["encounter_number"]),
+                "name": entry["folder_name"],
+                "ca_utc": entry.get("ca_utc"),
+                "pass_side": entry.get("pass_side"),
+                "arc_length_deg": entry.get("arc_length_deg"),
+                "range_axis_center_cad": entry.get("range_axis_center_cad"),
+                "omega_axis_cad": entry.get("omega_axis_cad"),
+                "los": views[:, :3].round(6).tolist(),
+            })
+        return {"encounters": encounters}
 
     def load_cloud(self, name: str) -> dict:
         run = self.safe_run(name)
@@ -174,6 +197,11 @@ class CheckpointCache:
             abort(404, "No preview is available yet")
         return max(previews, key=lambda item: item[0])[1]
 
+    def preview_metadata(self, name: str) -> dict:
+        path = self.preview(name)
+        match = re.search(r"iter_(\d+)\.png$", path.name)
+        return {"iteration": int(match.group(1)) if match else 0, "filename": path.name}
+
 
 def build_app(output_root: Path, maximum_points: int) -> Flask:
     app = Flask(__name__, template_folder="live_dashboard/templates")
@@ -187,6 +215,10 @@ def build_app(output_root: Path, maximum_points: int) -> Flask:
     def runs():
         return jsonify(cache.list_runs())
 
+    @app.get("/api/orbits")
+    def orbits():
+        return jsonify(cache.orbit_data())
+
     @app.get("/api/run/<name>")
     def cloud(name: str):
         return jsonify(cache.load_cloud(name))
@@ -194,6 +226,10 @@ def build_app(output_root: Path, maximum_points: int) -> Flask:
     @app.get("/api/run/<name>/preview")
     def preview(name: str):
         return send_file(cache.preview(name), mimetype="image/png", conditional=True)
+
+    @app.get("/api/run/<name>/preview-meta")
+    def preview_meta(name: str):
+        return jsonify(cache.preview_metadata(name))
 
     @app.get("/health")
     def health():

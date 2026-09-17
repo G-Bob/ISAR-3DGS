@@ -126,11 +126,29 @@ def train(
     history: list[dict] = []
     start_time = time.perf_counter()
     views_per_batch = max(1, int(arguments["views_per_batch"]))
+    replay_fraction = float(arguments.get("continual_replay_fraction", 0.0))
+    if not 0.0 <= replay_fraction < 1.0:
+        raise ValueError("continual_replay_fraction must be in [0, 1)")
+    current_encounter = arguments.get("continual_current_encounter")
+    current_views = [view for view in views if view.encounter == current_encounter]
+    replay_views = [view for view in views if view.encounter != current_encounter]
+    if current_encounter and not current_views:
+        raise ValueError(f"continual_current_encounter is unavailable: {current_encounter}")
     evidence_ema = torch.zeros(scene.count, device=device)
     gradient_ema = torch.zeros(scene.count, device=device)
     direction_gradient_ema = torch.zeros_like(scene.means.detach())
     visible_ema = torch.zeros(scene.count, device=device)
     observation_ema = torch.zeros(scene.count, device=device)
+    protection_threshold = float(
+        arguments.get("protect_warm_start_support_threshold", 0.0)
+    )
+    if not 0.0 <= protection_threshold <= 1.0:
+        raise ValueError("protect_warm_start_support_threshold must be in [0, 1]")
+    protected_inherited = (
+        scene.support_probability().detach() >= protection_threshold
+        if arguments.get("warm_start_checkpoint") and protection_threshold > 0.0
+        else torch.zeros(scene.count, dtype=torch.bool, device=device)
+    )
     encounter_names = sorted({view.encounter for view in views})
     encounter_to_index = {name: index for index, name in enumerate(encounter_names)}
     encounter_observation_ema = torch.zeros(
@@ -186,7 +204,19 @@ def train(
                 f"hard={pca_mode in {'stage_c_hard', 'adaptive_hard'}}"
             )
 
-        if views_per_batch <= len(views):
+        if current_encounter and replay_views and replay_fraction > 0.0:
+            replay_count = min(
+                views_per_batch - 1,
+                max(1, round(views_per_batch * replay_fraction)),
+            )
+            current_count = views_per_batch - replay_count
+            def draw(pool, count):
+                if count <= len(pool):
+                    return randomizer.sample(pool, count)
+                return [pool[randomizer.randrange(len(pool))] for _ in range(count)]
+            batch = draw(current_views, current_count) + draw(replay_views, replay_count)
+            randomizer.shuffle(batch)
+        elif views_per_batch <= len(views):
             batch = randomizer.sample(views, views_per_batch)
         else:
             batch = [views[randomizer.randrange(len(views))] for _ in range(views_per_batch)]
@@ -665,6 +695,15 @@ def train(
                     negative_encounter_count.float().mean().detach()
                 )
                 record["prune_encounter_eligible"] = int(prune_eligible.sum())
+            if protected_inherited.any():
+                if prune_eligible is None:
+                    prune_eligible = torch.ones(
+                        scene.count, dtype=torch.bool, device=device
+                    )
+                prune_eligible &= ~protected_inherited
+                record["protected_inherited_gaussians"] = int(
+                    protected_inherited.sum()
+                )
             split_eligible = (
                 split_age >= split_cooldown if split_cooldown > 0
                 else torch.ones(scene.count, dtype=torch.bool, device=device)
@@ -720,6 +759,7 @@ def train(
             direction_gradient_ema = direction_gradient_ema[source].clone()
             visible_ema = visible_ema[source].clone()
             observation_ema = observation_ema[source].clone()
+            protected_inherited = protected_inherited[source].clone()
             encounter_observation_ema = encounter_observation_ema[:, source].clone()
             encounter_evidence_ema = encounter_evidence_ema[:, source].clone()
             split_age = split_age[source].clone()
