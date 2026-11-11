@@ -1,0 +1,9 @@
+{
+  "mode": "sh3",
+  "count": 20000,
+  "loss": 0.2856318950653076,
+  "seconds": 0.4266400879714638,
+  "means_gradient": 0.03848825395107269,
+  "feature_gradient": 0.0014884197153151035,
+  "passed": true
+}

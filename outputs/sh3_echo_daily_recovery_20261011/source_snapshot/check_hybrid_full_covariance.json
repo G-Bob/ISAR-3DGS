@@ -1,0 +1,9 @@
+{
+  "mode": "full_covariance",
+  "count": 20005,
+  "loss": 0.23677808046340942,
+  "seconds": 3.760341931018047,
+  "means_gradient": 0.016615480184555054,
+  "feature_gradient": 0.007315088529139757,
+  "passed": true
+}

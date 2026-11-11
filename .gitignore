@@ -12,3 +12,4 @@ checkpoints/
 smoke/
 smoke_eval/
 backups/
+.ipynb_checkpoints/

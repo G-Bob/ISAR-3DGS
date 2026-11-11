@@ -1,0 +1,9 @@
+{
+  "mode": "no_visibility",
+  "count": 20000,
+  "loss": 0.27270057797431946,
+  "seconds": 0.4107934390194714,
+  "means_gradient": 0.050562165677547455,
+  "feature_gradient": 0.017235316336154938,
+  "passed": true
+}

@@ -1,5 +1,7 @@
 # ISAR RadarGS: Sequential Encounter Reconstruction
 
+> **SC-GS (TAES manuscript):** method summary, code locations and paper results are in [SCGS_TAES.md](SCGS_TAES.md).
+
 This repository contains the RadarGS implementation used to study 3D reconstruction as chronological radar encounters accumulate. Each `K` model uses a physically ordered encounter prefix; the newer continual-learning experiments can also warm-start from the preceding stage and control historical replay.
 
 ## Current experiment

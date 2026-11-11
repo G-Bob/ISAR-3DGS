@@ -1,0 +1,37 @@
+import json, csv, datetime as dt
+from pathlib import Path
+import numpy as np
+import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
+DS = Path('/rds/homes/g/gey/Yao/programs/GEIST-6/datasets/bsat')
+rows = list(csv.DictReader(open('outputs/bsat_observation_days_20261004/cpi_membership.csv')))
+t0 = dt.datetime.fromisoformat(rows[0]['start_utc'])
+los = np.array([json.load(open(DS / r['cpi'] / 'static_los_metadata.json'))['preset_encounter']['range_axis_center_rtn'] for r in rows])
+z = np.load('outputs/q_main_20261017/acq_consistency_percpi.npz'); day, dur, rng = z['day'], z['dur'], z['rng']
+step = np.degrees(np.arccos(np.clip((los[1:] * los[:-1]).sum(1), -1, 1)))
+arc = np.concatenate([[0], np.cumsum(np.minimum(step, 1.929))]) + 1.929
+plt.rcParams.update({'font.size': 7})
+fig = plt.figure(figsize=(7.16, 2.35))
+ax = fig.add_subplot(1, 3, 1, projection='3d')
+sc = ax.scatter(los[:, 0], los[:, 1], los[:, 2], c=day, cmap='viridis', s=1.0, depthshade=False)
+ax.set_xlabel('R', labelpad=-8); ax.set_ylabel('T', labelpad=-8); ax.set_zlabel('N', labelpad=-8); ax.set_box_aspect((1, 1, 1))
+for a in (ax.xaxis, ax.yaxis, ax.zaxis): a.set_tick_params(labelsize=5, pad=-3)
+cb = fig.colorbar(sc, ax=ax, shrink=0.6, pad=0.22); cb.set_label('Elapsed day', fontsize=6); cb.ax.tick_params(labelsize=5)
+ax.set_title('(a)', fontsize=7, loc='left')
+ax2 = fig.add_subplot(1, 3, 2)
+ax2.scatter(day, rng, s=0.8, c='#2a78d6', label='range')
+ax2.set_xlabel('Elapsed day'); ax2.set_ylabel('Range (km)'); ax2.grid(alpha=0.25, lw=0.5)
+ax3 = ax2.twinx(); ax3.plot(day, arc / 1000, color='0.3', lw=0.9, ls='--', label='accumulated LOS arc')
+ax3.set_ylabel(r'Accumulated LOS arc ($10^3$ deg)')
+h1, l1 = ax2.get_legend_handles_labels(); h2, l2 = ax3.get_legend_handles_labels()
+ax2.legend(h1 + h2, l1 + l2, fontsize=5.5, frameon=False, loc='upper center', markerscale=4)
+ax2.set_title('(b)', fontsize=7, loc='left')
+ax4 = fig.add_subplot(1, 3, 3)
+ax4.scatter(day, dur / 60, s=0.8, c='#e8710a')
+ax4.set_yscale('log'); ax4.set_yticks([4, 6, 10, 20, 40]); ax4.set_yticklabels(['4', '6', '10', '20', '40']); ax4.minorticks_off(); ax4.set_xlabel('Elapsed day'); ax4.set_ylabel(r'Orbital time per $1.929^\circ$ CPI (min)')
+ax4.grid(alpha=0.25, lw=0.5, which='both')
+sec = ax4.secondary_yaxis('right', functions=(lambda T: 1.929 / np.maximum(T, 1e-6), lambda w: 1.929 / np.maximum(w, 1e-6)))
+sec.set_ylabel(r'LOS rate (deg/min)'); sec.set_yticks([0.05, 0.1, 0.2, 0.4]); sec.set_yticklabels(['0.05', '0.1', '0.2', '0.4']); sec.minorticks_off()
+ax4.set_title('(c)', fontsize=7, loc='left')
+fig.tight_layout(w_pad=1.2)
+fig.savefig('outputs/q_main_20261017/figs_labelled/bsat_geometry_window.png', dpi=300)
+print('done')

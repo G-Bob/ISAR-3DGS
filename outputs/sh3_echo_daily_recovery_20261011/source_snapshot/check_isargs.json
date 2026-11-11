@@ -1,0 +1,36 @@
+{
+  "mode": "isargs",
+  "alpha_reference": {
+    "forward_max_error": 2.980232238769531e-07,
+    "gradient_max_errors": [
+      2.5331974029541016e-07,
+      4.172325134277344e-07,
+      1.0281801223754883e-06,
+      2.384185791015625e-07
+    ]
+  },
+  "count": 10000,
+  "loss": 0.1052454337477684,
+  "gradient_norms": {
+    "means": 0.0030557734426110983,
+    "log_scales": 0.0002530157216824591,
+    "quaternions": 2.8129190923209535e-06,
+    "support_logits": 0.0002605229092296213,
+    "sh_dc": 0.00015808937314432114,
+    "sh_rest": 0.0006122774793766439,
+    "imag_dc": 2.2976000764174387e-06,
+    "imag_rest": 8.898566193238366e-06
+  },
+  "view_forward_backward_seconds": 0.011593670933507383,
+  "peak_allocated_gib": 0.030333518981933594,
+  "peak_reserved_gib": 0.03515625,
+  "attenuation_range": [
+    0.005559132434427738,
+    1.0
+  ],
+  "stress20k_first_seconds": 0.01836521807126701,
+  "stress20k_seconds": 0.010464660939760506,
+  "stress20k_peak_gib": 0.04523515701293945,
+  "source": "/rds/projects/g/gashinms-1005113/Yao/programs/ISAR-3DGS/outputs/paper_reproduction/pei_bsat_wide.py",
+  "passed": true
+}
